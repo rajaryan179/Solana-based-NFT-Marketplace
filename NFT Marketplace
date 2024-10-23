@@ -1,0 +1,106 @@
+use anchor_lang::prelude::*;
+use anchor_spl::token::{self, Token, TokenAccount, Mint, Transfer};
+
+declare_id!("Fg6PaFpoGXkYsidMpWFK2gk6W2yX2zD9fp96Q4ZfhmQj");
+
+#[program]
+pub mod nft_marketplace {
+    use super::*;
+
+    // Mint a new NFT with the specified metadata URI
+    pub fn mint_nft(ctx: Context<MintNft>, uri: String) -> Result<()> {
+        let nft = &mut ctx.accounts.nft_metadata;
+        nft.uri = uri;
+        nft.owner = ctx.accounts.user.key();
+
+        msg!("Minting NFT with URI: {}", nft.uri);
+        Ok(())
+    }
+
+    // List an NFT for sale on the marketplace
+    pub fn list_nft(ctx: Context<ListNft>, price: u64) -> Result<()> {
+        let listing = &mut ctx.accounts.listing;
+        listing.nft_mint = ctx.accounts.nft_account.mint;
+        listing.owner = ctx.accounts.owner.key();
+        listing.price = price;
+
+        msg!("NFT listed for {} lamports", price);
+        Ok(())
+    }
+
+    // Buy an NFT from the marketplace
+    pub fn buy_nft(ctx: Context<BuyNft>) -> Result<()> {
+        let listing = &ctx.accounts.listing;
+        let buyer = &ctx.accounts.buyer;
+        let seller = &ctx.accounts.seller;
+
+        // Transfer the funds from the buyer to the seller
+        let cpi_accounts = Transfer {
+            from: buyer.to_account_info(),
+            to: seller.to_account_info(),
+            authority: buyer.to_account_info(),
+        };
+        let cpi_program = ctx.accounts.token_program.to_account_info();
+        let cpi_ctx = CpiContext::new(cpi_program, cpi_accounts);
+        token::transfer(cpi_ctx, listing.price)?;
+
+        // Transfer the NFT to the buyer
+        msg!("NFT purchased for {} lamports", listing.price);
+        Ok(())
+    }
+}
+
+#[derive(Accounts)]
+pub struct MintNft<'info> {
+    #[account(init, payer = user, mint::decimals = 0, mint::authority = user)]
+    pub nft_mint: Account<'info, Mint>,
+    #[account(init, payer = user, associated_token::mint = nft_mint, associated_token::authority = user)]
+    pub nft_account: Account<'info, TokenAccount>,
+    #[account(init, payer = user, space = 8 + 32 + 64)]
+    pub nft_metadata: Account<'info, NftMetadata>, // Stores the NFT metadata (URI, owner)
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub rent: Sysvar<'info, Rent>,
+}
+
+#[derive(Accounts)]
+pub struct ListNft<'info> {
+    #[account(mut, has_one = owner)]
+    pub nft_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub owner: Signer<'info>,
+    #[account(init, payer = owner, space = 8 + 32 + 8)]
+    pub listing: Account<'info, Listing>, // Stores the listing details (price, seller)
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct BuyNft<'info> {
+    #[account(mut, has_one = nft_mint)]
+    pub listing: Account<'info, Listing>, // The listing being bought
+    #[account(mut)]
+    pub nft_account: Account<'info, TokenAccount>, // NFT account
+    #[account(mut)]
+    pub buyer: Signer<'info>, // Buyer of the NFT
+    #[account(mut)]
+    pub seller: AccountInfo<'info>, // Seller of the NFT
+    pub token_program: Program<'info, Token>,
+    pub system_program: Program<'info, System>,
+}
+
+// State structure for NFT metadata
+#[account]
+pub struct NftMetadata {
+    pub owner: Pubkey, // Owner of the NFT
+    pub uri: String,   // Metadata URI for the NFT
+}
+
+// State structure for an NFT listing
+#[account]
+pub struct Listing {
+    pub nft_mint: Pubkey, // The mint address of the NFT being listed
+    pub owner: Pubkey,    // The seller of the NFT
+    pub price: u64,       // Listing price of the NFT in lamports
+}
